@@ -1,0 +1,1 @@
+# Analiza kohenrencji na sygnałach ciśnienia wewnątrzczaskowego i tętniczego
