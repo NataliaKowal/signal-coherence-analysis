@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from scipy import interpolate
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -14,14 +15,10 @@ class SignalData:
         signal (np.ndarray): Tablica z wartościami sygnału
         fs (float): Częstotliwość próbkowania w Hz
         time_start (float): Czas rozpoczęcia rejestracji w sekundach
-        any_error_flag (bool): Flaga wskazująca na wystąpienie błędów
-        percent_invalid (float): Procent nieprawidłowych próbek
     """
     signal: np.ndarray
     fs: float
     time_start: float
-    any_error_flag: bool
-    percent_invalid: float
     
     @property
     def duration(self) -> float:
@@ -35,42 +32,129 @@ class SignalData:
 
 class SignalLoader:
     """
-    Klasa odpowiedzialna za wczytywanie sygnałów z plików PKL
+    Klasa odpowiedzialna za wczytywanie sygnałów z plików CSV
     
     Attributes:
         data_path (Path): Ścieżka do katalogu z danymi
     """
     def __init__(self, data_dir: str = "data"):
         self.data_path = Path().resolve().parent / data_dir
-        
-    def load_signal(self, filename: str, signal_index: int = 0) -> Optional[SignalData]:
+        # self.data_path = Path().resolve() / data_dir
+    
+    @staticmethod
+    def _replace_nans(signal: np.ndarray) -> np.ndarray:
         """
-        Wczytuje sygnał z pliku PKL
+        Zastępuje wartości NaN poprzednią wartością
         
         Args:
-            filename: Nazwa pliku PKL
-            signal_index: Indeks sygnału do wczytania (domyślnie 0)
+            signal: Tablica z wartościami sygnału
             
         Returns:
-            SignalData lub None w przypadku błędu
+            Tablica z zastąpionymi wartościami NaN
+        """
+        signal = np.array(signal)
+        mask = np.isnan(signal)
+        
+        # Jeśli nie ma NaN, zwróć oryginalny sygnał
+        if not np.any(mask):
+            return signal
+            
+        # Znajdź pierwszą nie-NaN wartość dla inicjalizacji
+        first_valid_idx = np.where(~mask)[0]
+        if len(first_valid_idx) == 0:
+            raise ValueError("Sygnał zawiera same wartości NaN!")
+        
+        first_valid_value = signal[first_valid_idx[0]]
+        
+        # Zastąp NaN poprzednią wartością
+        cleaned_signal = signal.copy()
+        last_valid_value = first_valid_value
+        
+        for i in range(len(signal)):
+            if np.isnan(signal[i]):
+                cleaned_signal[i] = last_valid_value
+            else:
+                last_valid_value = signal[i]
+                
+        return cleaned_signal
+    
+    @staticmethod
+    def _convert_datetime_to_time(datetime: np.ndarray, multi_day: bool = False) -> Tuple[np.ndarray, float]:
+        """
+        Konwertuje wartości datetime na wektor czasu i częstotliwość próbkowania
+        
+        Args:
+            datetime: Tablica wartości datetime
+            multi_day: Czy dane obejmują wiele dni
+            
+        Returns:
+            Tuple zawierający wektor czasu i częstotliwość próbkowania
+        """
+        if not multi_day:
+            t0 = (datetime[0] - np.floor(datetime[0])) * 24 * 3600
+            t_hat = np.squeeze((datetime - np.floor(datetime)) * 24 * 3600 - t0)
+            fs_hat = round(1 / (t_hat[1] - t_hat[0]), 0)
+        else:
+            n_datetime = datetime - datetime[0]
+            n_datetime_days = np.floor(n_datetime)
+            c_datetime = n_datetime - n_datetime_days
+            c_datetime_seconds = c_datetime * 24 * 3600
+
+            t_hat = []
+            for idx in range(0, len(datetime)):
+                c_t = n_datetime_days[idx] * 24 * 3600 + c_datetime_seconds[idx]
+                t_hat.append(c_t)
+            t_hat = np.asarray(t_hat)
+            fs_hat = round(1 / (t_hat[1] - t_hat[0]), 0)
+        return t_hat, fs_hat
+
+    def load_signals(self, filename: str, multi_day: bool = False) -> Tuple[Optional[SignalData], Optional[SignalData]]:
+        """
+        Wczytuje sygnały ICP i ABP z pliku CSV
+        
+        Args:
+            filename: Nazwa pliku CSV
+            multi_day: Czy dane obejmują wiele dni
+            
+        Returns:
+            Tuple zawierająca obiekty SignalData dla ICP i ABP lub None w przypadku błędu
         """
         try:
             file_path = self.data_path / filename
-            data = pd.read_pickle(file_path)
+            # Wczytanie danych z CSV
+            data = pd.read_csv(file_path)
             
-            return SignalData(
-                signal=data[signal_index]["signal"],
-                fs=data[signal_index]["fs"],
-                time_start=data[signal_index]["time_start"],
-                any_error_flag=data[signal_index]["any_error_flag"],
-                percent_invalid=data[signal_index]["percent_invalid"]
+            # Konwersja kolumny DateTime na wartości numeryczne
+            datetime_values = pd.to_numeric(data['DateTime'])
+            
+            # Konwersja czasu i obliczenie częstotliwości próbkowania
+            time_vector, fs = self._convert_datetime_to_time(datetime_values.values, multi_day)
+            
+            # Wczytanie i oczyszczenie sygnałów z NaN
+            icp_values = self._replace_nans(data['icp[mmHg]'].values)
+            abp_values = self._replace_nans(data['abp[mmHg]'].values)
+            
+            # Utworzenie obiektów SignalData dla obu sygnałów
+            icp_signal = SignalData(
+                signal=icp_values,
+                fs=fs,
+                time_start=time_vector[0]
             )
+            
+            abp_signal = SignalData(
+                signal=abp_values,
+                fs=fs,
+                time_start=time_vector[0]
+            )
+            
+            return icp_signal, abp_signal
+            
         except FileNotFoundError:
             print(f"Nie znaleziono pliku: {file_path}")
-            return None
+            return None, None
         except Exception as e:
             print(f"Błąd podczas wczytywania pliku {filename}: {str(e)}")
-            return None
+            return None, None
 
 class SignalAnalyzer:
     """
@@ -98,17 +182,17 @@ class SignalAnalyzer:
             - Jeśli time_window nie podano, wyświetla cały sygnał
         """
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-        
-        t_icp = self.icp.time_vector
-        t_abp = self.abp.time_vector
+    
+        t_icp = self.icp.time_vector + self.icp.time_start
+        t_abp = self.abp.time_vector + self.abp.time_start
         
         if time_window:
-            start_idx = int(time_window[0] * self.icp.fs)
-            end_idx = int(time_window[1] * self.icp.fs)
-            t_icp = t_icp[start_idx:end_idx]
-            t_abp = t_abp[start_idx:end_idx]
-            icp_signal = self.icp.signal[start_idx:end_idx]
-            abp_signal = self.abp.signal[start_idx:end_idx]
+            mask_icp = (t_icp >= time_window[0]) & (t_icp <= time_window[1])
+            mask_abp = (t_abp >= time_window[0]) & (t_abp <= time_window[1])
+            t_icp = t_icp[mask_icp]
+            t_abp = t_abp[mask_abp]
+            icp_signal = self.icp.signal[mask_icp]
+            abp_signal = self.abp.signal[mask_abp]
         else:
             icp_signal = self.icp.signal
             abp_signal = self.abp.signal
@@ -209,13 +293,7 @@ class SignalAnalyzer:
 
     def analyze_frequency_bands(self, bands: dict = None):
         """
-        Analizuje energię w określonych pasmach częstotliwości
-        
-        Args:
-            bands: Słownik z definicjami pasm częstotliwości, np.:
-                  {'VLF': (0.02, 0.07), 'LF': (0.07, 0.2), 'HF': (0.2, 0.5)}
-        Returns:
-            dict: Słownik z energią w każdym paśmie dla obu sygnałów
+        Analizuje energię w określonych pasmach częstotliwości z dodatkową diagnostyką
         """
         if bands is None:
             bands = {
@@ -234,13 +312,21 @@ class SignalAnalyzer:
         for band_name, (f_min, f_max) in bands.items():
             # Dla ICP
             mask_icp = (freq_icp >= f_min) & (freq_icp <= f_max)
-            results['ICP'][band_name] = np.sum(mag_icp[mask_icp]**2)
+            if np.sum(mask_icp) > 0:
+                band_power = np.sum(mag_icp[mask_icp]**2)
+                results['ICP'][band_name] = band_power
+            else:
+                results['ICP'][band_name] = 0
 
             # Dla ABP
             mask_abp = (freq_abp >= f_min) & (freq_abp <= f_max)
-            results['ABP'][band_name] = np.sum(mag_abp[mask_abp]**2)
+            if np.sum(mask_abp) > 0:
+                band_power = np.sum(mag_abp[mask_abp]**2)
+                results['ABP'][band_name] = band_power
+            else:
+                results['ABP'][band_name] = 0
 
-        return results
+        return results  
     
     def calculate_coherence(self, nperseg: int = 256, noverlap: int = None, window: str = 'hann'):
         """
@@ -263,15 +349,19 @@ class SignalAnalyzer:
         """
         from scipy import signal
         
-        # Użycie wbudowanej funkcji scipy do obliczenia koherencji
-        freq, coh = signal.coherence(self.icp.signal, self.abp.signal, 
-                                fs=self.icp.fs,
-                                nperseg=nperseg,
-                                noverlap=noverlap,
-                                window=window)
+        # Sprawdzenie czy częstotliwości próbkowania są takie same
+        if self.icp.fs != self.abp.fs:
+            raise ValueError("Sygnały muszą mieć tę samą częstotliwość próbkowania")
+            
+        # Obliczenie koherencji
+        freq, coh = signal.coherence(self.icp.signal, self.abp.signal,
+                                   fs=self.icp.fs,
+                                   nperseg=nperseg,
+                                   noverlap=noverlap,
+                                   window=window)
         
-        # Obliczenie fazy używając csd
-        _, phase = signal.csd(self.icp.signal, self.abp.signal, 
+        # Obliczenie fazy
+        _, phase = signal.csd(self.icp.signal, self.abp.signal,
                             fs=self.icp.fs,
                             nperseg=nperseg,
                             noverlap=noverlap,
@@ -279,7 +369,6 @@ class SignalAnalyzer:
         phase = np.angle(phase)
         
         return freq, coh, phase
-
 
     def plot_coherence_analysis(self, freq_range: Optional[tuple] = None, 
                               nperseg: int = 256, significance_level: float = 0.95):
@@ -407,12 +496,7 @@ class SignalAnalyzer:
         
         if len(self.icp.signal) < min_length or len(self.abp.signal) < min_length:
             print("UWAGA: Sygnały są zbyt krótkie dla wiarygodnej analizy")
-            return False
-            
-        if self.icp.percent_invalid > 10 or self.abp.percent_invalid > 10:
-            print("UWAGA: Wysoki procent nieprawidłowych próbek może wpływać na wyniki")
-            return False
-            
+            return False            
         return True
 
     def analyze_icp_abp_coherence(self):
@@ -464,9 +548,9 @@ def main():
     loader = SignalLoader()
     
     # Wczytanie sygnałów
-    icp_signal = loader.load_signal("2aHc688_ICP.pkl", 1)
-    abp_signal = loader.load_signal("2aHc688_ABP.pkl", 1)
+    icp_signal, abp_signal = loader.load_signals("PAC7_r3_SHORT.csv", True)
     
+    # Jeżeli oba sygnały istnieją
     if icp_signal and abp_signal:
         # Utworzenie analizatora
         analyzer = SignalAnalyzer(icp_signal, abp_signal)
@@ -475,7 +559,6 @@ def main():
         print(f"Częstotliwość próbkowania\nICP: {icp_signal.fs} Hz \nABP: {abp_signal.fs} Hz \n")
         print(f"Długość sygnału\nICP: {icp_signal.duration:.2f} s \nABP: {abp_signal.duration} s \n")
         print(f"Czas rozpoczęcia\nICP: {icp_signal.time_start:.2f} s \nABP: {abp_signal.time_start} s \n")
-        print(f"Procent nieprawidłowych próbek\nICP: {icp_signal.percent_invalid}% \nABP: {abp_signal.percent_invalid}%")
 
         # Wyświetlenie pierwszych 10 sekund sygnałów
         analyzer.plot_signals(time_window=(0, 10))
