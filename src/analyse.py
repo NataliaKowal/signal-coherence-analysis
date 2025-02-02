@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
-from scipy import interpolate
+from scipy import interpolate, stats
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -38,7 +38,7 @@ class SignalLoader:
         data_path (Path): Ścieżka do katalogu z danymi
     """
     def __init__(self, data_dir: str = "data"):
-        self.data_path = Path().resolve().parent / data_dir
+        self.data_path = Path().resolve() / data_dir
         # self.data_path = Path().resolve() / data_dir
     
     @staticmethod
@@ -235,15 +235,18 @@ class SignalAnalyzer:
         return frequencies, magnitudes
 
     def plot_fft_comparison(self, time_window: Optional[tuple] = None, 
-                          freq_range: Optional[tuple] = None,
-                          db_scale: bool = True):
+                       freq_range: Optional[tuple] = None,
+                       db_scale: bool = True,
+                       frequency_bands: Optional[dict] = None):
         """
-        Porównuje widma FFT sygnałów ICP i ABP
+        Porównuje widma FFT sygnałów ICP i ABP z opcjonalnym zaznaczeniem pasm częstotliwości
         
         Args:
             time_window: Opcjonalna krotka (start, koniec) w sekundach dla analizy
             freq_range: Opcjonalna krotka (min_freq, max_freq) do wyświetlenia
             db_scale: Czy używać skali decybelowej (logarytmicznej)
+            frequency_bands: Słownik z pasmami częstotliwości w formacie:
+                {'nazwa_pasma': (częstotliwość_min, częstotliwość_max)}
         """
         # Przygotowanie danych
         if time_window:
@@ -261,7 +264,7 @@ class SignalAnalyzer:
 
         # Konwersja do skali dB jeśli wymagane
         if db_scale:
-            mag_icp = 20 * np.log10(mag_icp + 1e-10)  # Dodajemy małą wartość aby uniknąć log(0)
+            mag_icp = 20 * np.log10(mag_icp + 1e-10)
             mag_abp = 20 * np.log10(mag_abp + 1e-10)
 
         # Przygotowanie wykresu
@@ -278,11 +281,21 @@ class SignalAnalyzer:
 
         # Wykreślenie widm
         ax1.plot(freq_icp, mag_icp, 'b-', label='ICP')
+        ax2.plot(freq_abp, mag_abp, 'r-', label='ABP')
+
+        # Dodanie zaznaczenia pasm częstotliwości jeśli podano
+        if frequency_bands:
+            colors = ['lightgreen', 'lightblue', 'lightpink', 'lightyellow', 'lightgray']
+            for (band_name, (f_min, f_max)), color in zip(frequency_bands.items(), colors):
+                # Zaznaczenie na górnym wykresie (ICP)
+                ax1.axvspan(f_min, f_max, alpha=0.3, color=color, label=band_name)
+                # Zaznaczenie na dolnym wykresie (ABP)
+                ax2.axvspan(f_min, f_max, alpha=0.3, color=color, label=band_name)
+
         ax1.set_ylabel('Amplituda ICP ' + ('[dB]' if db_scale else ''))
         ax1.grid(True)
         ax1.legend()
 
-        ax2.plot(freq_abp, mag_abp, 'r-', label='ABP')
         ax2.set_xlabel('Częstotliwość [Hz]')
         ax2.set_ylabel('Amplituda ABP ' + ('[dB]' if db_scale else ''))
         ax2.grid(True)
@@ -371,29 +384,31 @@ class SignalAnalyzer:
         return freq, coh, phase
 
     def plot_coherence_analysis(self, freq_range: Optional[tuple] = None, 
-                              nperseg: int = 256, significance_level: float = 0.95):
+                          nperseg: int = 256, significance_level: float = 0.95):
         """
-        Wizualizuje analizę koherencji między sygnałami
+        Wizualizuje analizę koherencji między sygnałami z istotności statystyczną per segment
         
         Args:
             freq_range (tuple, optional): Zakres częstotliwości (min, max) w Hz
             nperseg (int): Długość segmentu do analizy
             significance_level (float): Poziom istotności statystycznej (0-1)
-            
-        Notes:
-            - Górny wykres pokazuje koherencję z poziomem istotności
-            - Dolny wykres pokazuje fazę między sygnałami
-            - Automatycznie oblicza próg istotności statystycznej
         """
         # Obliczenie koherencji używając scipy
         freq, coherence, phase = self.calculate_coherence(nperseg=nperseg)
         
-        # Obliczenie poziomu istotności statystycznej
-        dof = 2 * len(self.icp.signal) / nperseg
-        significance_threshold = 1 - (1 - significance_level)**(1/(dof-1))
-
+        # Obliczenie efektywnej liczby segmentów (uwzględniając nakładanie się)
+        noverlap = nperseg // 2
+        n_segments = int(np.floor((len(self.icp.signal) - noverlap) / (nperseg - noverlap)))
+        # Korekta na nakładanie się segmentów
+        n_eff = n_segments * (1 - noverlap/nperseg)  # efektywna liczba niezależnych segmentów
+        
+        # Obliczenie p-value dla każdej częstotliwości
+        # Używamy skorygowanej liczby segmentów i mniej agresywnej transformacji
+        z_transform = np.sqrt(n_eff) * np.arctanh(coherence)  # usunięte mnożenie przez 2 i sqrt z coherence
+        p_values = 2 * (1 - stats.norm.cdf(np.abs(z_transform)))
+        
         # Przygotowanie wykresu
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
 
         # Ograniczenie zakresu częstotliwości jeśli podano
         if freq_range:
@@ -401,11 +416,10 @@ class SignalAnalyzer:
             freq = freq[mask]
             coherence = coherence[mask]
             phase = phase[mask]
+            p_values = p_values[mask]
 
         # Wykres koherencji
         ax1.plot(freq, coherence, 'b-', label='Koherencja')
-        ax1.axhline(y=significance_threshold, color='r', linestyle='--', 
-                   label=f'Poziom istotności ({significance_level:.2f})')
         ax1.set_ylabel('Koherencja')
         ax1.grid(True)
         ax1.legend()
@@ -413,15 +427,34 @@ class SignalAnalyzer:
 
         # Wykres fazy
         ax2.plot(freq, phase, 'g-', label='Faza')
-        ax2.set_xlabel('Częstotliwość [Hz]')
         ax2.set_ylabel('Faza [rad]')
         ax2.grid(True)
         ax2.legend()
         ax2.set_ylim(-np.pi, np.pi)
 
+        # Wykres p-value
+        ax3.plot(freq, p_values, 'r-', label='p-value')
+        critical_value = 1 - significance_level  # = 0.05 dla significance_level = 0.95
+        ax3.axhline(y=critical_value, color='k', linestyle='--', 
+                    label=f'Poziom krytyczny = {critical_value:.3f}')
+        
+        # Zaznaczenie obszarów istotnych statystycznie
+        # Zwiększamy alpha dla lepszej widoczności i upewniamy się, że wypełnienie jest pod krzywą p-value
+        significant_mask = p_values < critical_value
+        ax3.fill_between(freq, 0, 1,  # wypełniamy całą wysokość wykresu
+                        where=significant_mask,
+                        color='g', alpha=0.2,
+                        label='Obszar istotny statystycznie')
+        
+        ax3.set_xlabel('Częstotliwość [Hz]')
+        ax3.set_ylabel('p-value')
+        ax3.grid(True)
+        ax3.legend()
+        ax3.set_ylim(0, 1)
+
         plt.tight_layout()
         plt.show()
-    
+
     def analyze_specific_bands(self):
         """
         Analizuje koherencję w specyficznych pasmach częstotliwości
@@ -510,7 +543,7 @@ class SignalAnalyzer:
         # 1. Podstawowa analiza koherencji
         self.plot_coherence_analysis(
             freq_range=(0, 0.5),
-            nperseg=2048,  # Zwiększona długość okna
+            nperseg=4096,  # Zwiększona długość okna
             significance_level=0.95
         )
         
@@ -563,11 +596,27 @@ def main():
         # Wyświetlenie pierwszych 10 sekund sygnałów
         analyzer.plot_signals(time_window=(0, 10))
 
-        # Analiza FFT dla pierwszych 60 sekund sygnału
+        # Analiza FFT 
         analyzer.plot_fft_comparison(
-            time_window=(0, 60),
-            freq_range=(0, 2),  # Pokazuje częstotliwości do 2 Hz
-            db_scale=True
+            # time_window=(0, 60),  # ograniczenie analizy FFT do pierwszych 60s
+            freq_range=(0, 0.5),  # Pokazuje częstotliwości do 0.5 Hz
+            db_scale=True,
+            frequency_bands={
+                'VLF': (0.02, 0.07),
+                'LF': (0.07, 0.2),
+                'HF': (0.2, 0.5)
+            }
+        )
+
+        analyzer.plot_fft_comparison(
+            # time_window=(0, 60),  # ograniczenie analizy FFT do pierwszych 60s
+            freq_range=(0, 0.5),  # Pokazuje częstotliwości do 0.5 Hz
+            db_scale=False,
+            frequency_bands={
+                'VLF': (0.02, 0.07),
+                'LF': (0.07, 0.2),
+                'HF': (0.2, 0.5)
+            }
         )
         
         # Analiza pasm częstotliwości
