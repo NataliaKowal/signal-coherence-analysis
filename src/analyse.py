@@ -543,7 +543,7 @@ class SignalAnalyzer:
         # 1. Podstawowa analiza koherencji
         self.plot_coherence_analysis(
             freq_range=(0, 0.5),
-            nperseg=4096,  # Zwiększona długość okna
+            nperseg=20000,  # Zwiększona długość okna
             significance_level=0.95
         )
         
@@ -581,7 +581,7 @@ def main():
     loader = SignalLoader()
     
     # Wczytanie sygnałów
-    icp_signal, abp_signal = loader.load_signals("PAC7_r3_SHORT.csv", True)
+    icp_signal, abp_signal = loader.load_signals("PAC10_r10_SHORT.csv", True)
     
     # Jeżeli oba sygnały istnieją
     if icp_signal and abp_signal:
@@ -604,7 +604,7 @@ def main():
             frequency_bands={
                 'VLF': (0.02, 0.07),
                 'LF': (0.07, 0.2),
-                'HF': (0.2, 0.5)
+                'HF': (0.2, 0.5) 
             }
         )
 

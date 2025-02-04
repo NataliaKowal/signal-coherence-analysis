@@ -1,0 +1,46 @@
+Częstotliwość próbkowania
+ICP: 50.0 Hz 
+ABP: 50.0 Hz 
+
+Długość sygnału
+ICP: 14406.78 s 
+ABP: 14406.78 s 
+
+Czas rozpoczęcia
+ICP: 0.00 s 
+ABP: 0.0 s 
+
+
+Energia w pasmach częstotliwości:
+
+ICP:
+VLF: 6.83e-01
+LF: 5.90e-01
+HF: 4.11e-01
+
+ABP:
+VLF: 1.47e+01
+LF: 1.26e+01
+HF: 6.78e+00
+
+=== ANALIZA KOHERENCJI ICP-ABP ===
+
+Wyniki analizy koherencji w pasmach częstotliwości:
+
+VLF (0.020-0.070 Hz):
+  Średnia koherencja: 0.006
+  Maksymalna koherencja: 0.013
+  Średnia faza: -1.660 rad
+  Faza przy max koherencji: -1.217 rad
+
+LF (0.070-0.200 Hz):
+  Średnia koherencja: 0.040
+  Maksymalna koherencja: 0.086
+  Średnia faza: 0.011 rad
+  Faza przy max koherencji: -0.145 rad
+
+HF (0.200-0.500 Hz):
+  Średnia koherencja: 0.226
+  Maksymalna koherencja: 0.840
+  Średnia faza: 0.201 rad
+  Faza przy max koherencji: 0.237 rad
